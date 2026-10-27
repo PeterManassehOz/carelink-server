@@ -5,6 +5,8 @@ import type {
   AttachmentType,
   CloudinaryResourceType,
 } from "../models/HealthRecordAttachment.js";
+import { parseBuffer } from "music-metadata";
+
 
 export const MAX_IMAGE_SIZE = 15 * 1024 * 1024;
 export const MAX_DOCUMENT_SIZE = 15 * 1024 * 1024;
@@ -163,15 +165,13 @@ function isPlausibleText(buffer: Buffer): boolean {
   return controlCharacters <= Math.max(1, text.length * 0.01);
 }
 
-function hasValidContainer(
+async function hasValidContainer(
   extension: string,
   buffer: Buffer,
   detectedMime: string | undefined,
-): boolean {
+): Promise<boolean> {
   if (extension === "pdf") {
-    return buffer.subarray(0, 1024).includes(
-      Buffer.from("%PDF-"),
-    );
+    return buffer.subarray(0, 1024).includes(Buffer.from("%PDF-"));
   }
 
   if (["doc", "xls", "ppt"].includes(extension)) {
@@ -179,29 +179,53 @@ function hasValidContainer(
   }
 
   if (["docx", "xlsx", "pptx"].includes(extension)) {
-    // Office Open XML documents are ZIP containers.
-    // A ZIP signature alone does not prove that the expected
-    // Office document structure is present.
     return isZipContainer(buffer);
   }
 
   if (extension === "rtf") {
-    return buffer
-      .subarray(0, 16)
-      .toString("ascii")
-      .startsWith("{\\rtf");
+    return buffer.subarray(0, 16).toString("ascii").startsWith("{\\rtf");
   }
 
   if (["txt", "csv"].includes(extension)) {
     return isPlausibleText(buffer);
   }
 
+  if (extension === "m4a") {
+    // M4A uses an ISO Base Media File Format container.
+    // Require a valid ftyp box before attempting audio parsing.
+    const hasFtyp =
+      buffer.length >= 12 &&
+      buffer.subarray(4, 8).toString("ascii") === "ftyp";
+
+    if (!hasFtyp) {
+      return false;
+    }
+
+    try {
+      const metadata = await parseBuffer(buffer, {
+        mimeType: "audio/mp4",
+      });
+
+      const container = metadata.format.container?.toLowerCase() ?? "";
+      const codec = metadata.format.codec?.trim() ?? "";
+
+      // Require the parser to recognize an MP4-family audio stream
+      // and identify its audio codec.
+      return (
+        (container.includes("mpeg-4") || container.includes("mp4")) &&
+        codec.length > 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
   const expectedMime = MIME_BY_EXTENSION[extension];
 
   return Boolean(
     expectedMime &&
-    detectedMime &&
-    detectedMime === expectedMime,
+      detectedMime &&
+      detectedMime === expectedMime,
   );
 }
 
@@ -239,19 +263,31 @@ export async function validateAttachment(
     );
   }
 
+  
   const detected = await fileTypeFromBuffer(buffer);
 
-  if (
-    !hasValidContainer(
-      extension,
-      buffer,
-      detected?.mime,
-    )
-  ) {
+  const containerValid = await hasValidContainer(
+    extension,
+    buffer,
+    detected?.mime,
+  );
+
+  console.info('[AttachmentValidation] File diagnostics:', {
+    filename,
+    extension,
+    expectedMime: MIME_BY_EXTENSION[extension],
+    detectedMime: detected?.mime ?? null,
+    detectedExtension: detected?.ext ?? null,
+    size: buffer.length,
+    containerValid,
+  });
+
+  if (!containerValid) {
     throw new AttachmentValidationError(
-      "The file content does not match a supported file format.",
+      'The file content does not match a supported file format.',
     );
   }
+
 
   const mimeType = MIME_BY_EXTENSION[extension];
 

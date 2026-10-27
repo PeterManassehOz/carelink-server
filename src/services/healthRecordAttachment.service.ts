@@ -282,6 +282,45 @@ export async function deleteHealthRecordAttachment(
 }
 
 
+export async function deleteHealthRecordAttachmentsForRecord(
+  userId: string,
+  recordId: string,
+): Promise<void> {
+  assertValidIds(userId, recordId);
+
+  // Verify ownership before touching any attachment.
+  const record = await HealthRecord.findOne({
+    _id: recordId,
+    user: userId,
+  }).select("_id");
+
+  if (!record) {
+    throw new Error("HEALTH_RECORD_NOT_FOUND");
+  }
+
+  const attachments = await HealthRecordAttachment.find({
+    user: userId,
+    healthRecord: recordId,
+  })
+    .select("publicId resourceType")
+    .lean();
+
+  // Remove every Cloudinary asset before deleting metadata.
+  // If any deletion fails, leave all metadata in place so the
+  // operation can be retried safely.
+  for (const attachment of attachments) {
+    await destroyCloudinaryAsset(
+      attachment.publicId,
+      attachment.resourceType,
+    );
+  }
+
+  await HealthRecordAttachment.deleteMany({
+    user: userId,
+    healthRecord: recordId,
+  });
+}
+
 export async function getHealthRecordAttachmentAccess(
   userId: string,
   recordId: string,

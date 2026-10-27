@@ -8,6 +8,10 @@ import {
   type HealthRecordCategory,
 } from "../models/HealthRecord.js";
 
+import {
+  deleteHealthRecordAttachmentsForRecord,
+} from "./healthRecordAttachment.service.js";
+
 export interface CreateHealthRecordInput {
   clientRecordId?: string;
   title: string;
@@ -282,12 +286,30 @@ export async function deleteHealthRecord(
   assertValidUserId(userId);
   assertValidRecordId(recordId);
 
-  const record = await HealthRecord.findOneAndDelete({
+  // Confirm ownership before attempting attachment cleanup.
+  const record = await HealthRecord.findOne({
+    _id: recordId,
+    user: userId,
+  }).select("_id");
+
+  if (!record) {
+    throw new Error("HEALTH_RECORD_NOT_FOUND");
+  }
+
+  // Clean up Cloudinary assets and attachment metadata first.
+  // If cleanup fails, the parent record remains available for retry.
+  await deleteHealthRecordAttachmentsForRecord(
+    userId,
+    recordId,
+  );
+
+  // Delete the parent only after attachment cleanup succeeds.
+  const deletedRecord = await HealthRecord.findOneAndDelete({
     _id: recordId,
     user: userId,
   });
 
-  if (!record) {
+  if (!deletedRecord) {
     throw new Error("HEALTH_RECORD_NOT_FOUND");
   }
 }
